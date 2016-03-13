@@ -1,9 +1,9 @@
 #include <perl_libyaml.h>
 
-static yaml_encoding_t
-set_dumper_options(perl_yaml_dumper_t *);
-static yaml_encoding_t
-set_loader_options(perl_yaml_loader_t *);
+void
+set_dumper_options(perl_yaml_dumper_t *, HV*);
+void
+set_loader_options(perl_yaml_loader_t *, HV*);
 static SV *
 load_node(perl_yaml_loader_t *);
 static SV *
@@ -43,7 +43,7 @@ get_yaml_anchor(perl_yaml_dumper_t *, SV *);
 static yaml_char_t *
 get_yaml_tag(SV *);
 static int
-append_output(void *sv, unsigned char *buffer, size_t size);
+yaml_sv_write_handler(void *sv, unsigned char *buffer, size_t size);
 static int
 yaml_perlio_read_handler(void *data, unsigned char *buffer, size_t size, size_t *size_read);
 static int
@@ -166,24 +166,35 @@ loader_error_msg(perl_yaml_loader_t *loader, char *problem)
 }
 
 /*
- * Set loader options from global variables.
+ * Set loader options from global variables or hash of options.
+ * The hash overrides the globals.
  */
-static yaml_encoding_t
-set_loader_options(perl_yaml_loader_t *loader)
+void
+set_loader_options(perl_yaml_loader_t *loader, HV *options)
 {
     GV *gv;
     yaml_encoding_t result = YAML_UTF8_ENCODING;
+    SV **ret;
 
     /* As with YAML::Tiny. Default: strict Load */
     gv = gv_fetchpv("YAML::XS::NonStrict", TRUE, SVt_PV);
     loader->parser.problem_nonstrict = gv && SvTRUE(GvSV(gv)) ? 1 : 0;
+    ret = hv_fetch(options, "NonStrict", 9, 0);
+    if (ret) loader->parser.problem_nonstrict = SvIVX(*ret);
+
     loader->document = 0;
     loader->filename = NULL;
 
-    if ((gv = gv_fetchpv("YAML::XS::Encoding", GV_NOADD_NOINIT, SVt_PV))
-         && SvPOK(GvSV(gv)))
     {
-        const char *enc = SvPVX_const(GvSV(gv));
+        char *enc = NULL;
+        if ((gv = gv_fetchpv("YAML::XS::Encoding", GV_NOADD_NOINIT, SVt_PV))
+            && SvPOK(GvSV(gv)))
+        {
+            enc = SvPVX(GvSV(gv));
+        }
+        if ((ret = hv_fetch(options, "Encoding", sizeof("Encoding")-1, 0)))
+            enc = SvPVX(*ret);
+        
         if (strncmp(enc, "any", 3))
             yaml_parser_set_encoding(&loader->parser,
                                      (result = YAML_ANY_ENCODING));
@@ -195,10 +206,12 @@ set_loader_options(perl_yaml_loader_t *loader)
         else if (strncmp(enc, "utf16be", 7))
             yaml_parser_set_encoding(&loader->parser,
                                      (result = YAML_UTF16BE_ENCODING));
-        else
+        else if (enc)
             croak("Invalid $YAML::XS::Encoding %s. Valid: any, utf8, utf16le, utf16be", enc);
+        /*
+        if (result && !ret)
+            hv_store(obj, "Encoding", 8, newSViv((IV)result), 0);  */
     }
-    return result;
 }
 
 static int
@@ -260,34 +273,49 @@ load_error:
     return 0;
 }
 
+SV*
+new_loader(char* classname, HV *options) {
+    perl_yaml_loader_t loader;
+
+    yaml_parser_initialize(&loader.parser);
+    set_loader_options(&loader, options);
+    if (!options)
+        options = newHV();
+    hv_store(options, "_loader", sizeof("_loader")-1, newSViv(PTR2IV(&loader)), 0);
+    return sv_2mortal(sv_bless(newRV_noinc((SV*)options),
+                               gv_stashpvn(classname, strlen(classname), 1)));
+}
+
 /*
  * It takes a file or filename and turns it into 0 or more Perl objects.
  */
 int
-LoadFile(SV *sv_file)
+load_file(SV* loader_obj, SV *sv_file)
 {
-    perl_yaml_loader_t loader;
+    perl_yaml_loader_t *loader;
     FILE *file = NULL;
     const char *fname;
     STRLEN len;
     int ret;
 
-    yaml_parser_initialize(&loader.parser);
-    (void)set_loader_options(&loader);
+    SV **hret = hv_fetch((HV*)SvRV(loader_obj), "_loader", sizeof("_loader")-1, 0);
+    loader = INT2PTR(perl_yaml_loader_t*, SvIVX(*hret));
+    //yaml_parser_initialize(&loader->parser);
+    //(void)set_loader_options(loader, (HV*)SvRV(loader_obj));
 
     if (SvROK(sv_file)) { /* pv mg or io or gv */
         SV *rv = SvRV(sv_file);
 
         if (SvTYPE(rv) == SVt_PVIO) {
-            loader.perlio = IoIFP(rv);
-            yaml_parser_set_input(&loader.parser,
+            loader->perlio = IoIFP(rv);
+            yaml_parser_set_input(&loader->parser,
                                   &yaml_perlio_read_handler,
-                                  &loader);
+                                  loader);
         } else if (SvTYPE(rv) == SVt_PVGV && GvIO(rv)) {
-            loader.perlio = IoIFP(GvIOp(rv));
-            yaml_parser_set_input(&loader.parser,
+            loader->perlio = IoIFP(GvIOp(rv));
+            yaml_parser_set_input(&loader->parser,
                                   &yaml_perlio_read_handler,
-                                  &loader);
+                                  loader);
         } else if (SvMAGIC(rv)) {
             mg_get(rv);
             fname = SvPV_const(rv, len);
@@ -308,25 +336,25 @@ LoadFile(SV *sv_file)
             croak("Can't open '%s' for input", fname);
             return 0;
         }
-        loader.filename = (char *)fname;
-        yaml_parser_set_input_file(&loader.parser, file);
+        loader->filename = (char *)fname;
+        yaml_parser_set_input_file(&loader->parser, file);
     } else if (SvTYPE(sv_file) == SVt_PVIO) {
-        loader.perlio = IoIFP(sv_file);
-        yaml_parser_set_input(&loader.parser,
+        loader->perlio = IoIFP(sv_file);
+        yaml_parser_set_input(&loader->parser,
                               &yaml_perlio_read_handler,
-                              &loader);
+                              loader);
     } else if (SvTYPE(sv_file) == SVt_PVGV
                && GvIO(sv_file)) {
-        loader.perlio = IoIFP(GvIOp(sv_file));
-        yaml_parser_set_input(&loader.parser,
+        loader->perlio = IoIFP(GvIOp(sv_file));
+        yaml_parser_set_input(&loader->parser,
                               &yaml_perlio_read_handler,
-                              &loader);
+                              loader);
     } else {
         croak("Invalid argument type: %u", SvTYPE(sv_file));
         return 0;
     }
 
-    ret = load_impl(&loader);
+    ret = load_impl(loader);
     if (file)
         fclose(file);
     else if (SvTYPE(sv_file) == SVt_PVIO)
@@ -339,11 +367,14 @@ LoadFile(SV *sv_file)
  * It takes a yaml stream and turns it into 0 or more Perl objects.
  */
 int
-Load(SV *yaml_sv)
+load_string(SV* loader_obj, SV *yaml_sv)
 {
-    perl_yaml_loader_t loader;
+    perl_yaml_loader_t *loader;
     const unsigned char *yaml_str;
     STRLEN yaml_len;
+
+    SV **hret = hv_fetch((HV*)SvRV(loader_obj), "_loader", sizeof("_loader")-1, 0);
+    loader = INT2PTR(perl_yaml_loader_t*, SvIVX(*hret));
 
     yaml_str = (const unsigned char *)SvPV_const(yaml_sv, yaml_len);
 
@@ -354,15 +385,12 @@ Load(SV *yaml_sv)
         yaml_str = (const unsigned char*)SvPV_const(yaml_sv, yaml_len);
     }
 
-    yaml_parser_initialize(&loader.parser);
-    (void)set_loader_options(&loader);
     yaml_parser_set_input_string(
-        &loader.parser,
+        &loader->parser,
         yaml_str,
         yaml_len
     );
-
-    return load_impl(&loader);
+    return load_impl(loader);
 }
 
 /*
@@ -663,13 +691,18 @@ load_glob(perl_yaml_loader_t *loader)
 /* -------------------------------------------------------------------------- */
 
 /*
- * Set dumper options from global variables.
+ * Set dumper options from options hash or global variables.
+ * The hash overrides the globals.
  */
-static yaml_encoding_t
-set_dumper_options(perl_yaml_dumper_t *dumper)
+void
+set_dumper_options(perl_yaml_dumper_t *dumper, HV* options)
 {
     GV *gv;
+    SV **ret;
     yaml_encoding_t result = YAML_UTF8_ENCODING;
+    char *enc = NULL;
+    char *lb = NULL;
+
     dumper->dump_code = (
         ((gv = gv_fetchpv("YAML::XS::UseCode", GV_NOADD_NOINIT, SVt_IV))
          && SvTRUE(GvSV(gv)))
@@ -677,10 +710,20 @@ set_dumper_options(perl_yaml_dumper_t *dumper)
         ((gv = gv_fetchpv("YAML::XS::DumpCode", GV_NOADD_NOINIT, SVt_IV)) &&
         SvTRUE(GvSV(gv)))
     );
+    ret = hv_fetch(options, "UseCode", 7, 0);
+    if (ret)
+        dumper->dump_code = SvIVX(*ret);
+    else {
+        if ((ret = hv_fetch(options, "DumpCode", 8, 0)))
+            dumper->dump_code = SvIVX(*ret);
+    }
+    
     dumper->quote_number_strings = (
         ((gv = gv_fetchpv("YAML::XS::QuoteNumericStrings", GV_NOADD_NOINIT, SVt_IV)) &&
         SvTRUE(GvSV(gv)))
     );
+    if ((ret = hv_fetch(options, "QuoteNumericStrings", sizeof("QuoteNumericStrings")-1, 0)))
+        dumper->quote_number_strings = SvIVX(*ret);
     dumper->filename = NULL;
 
     /* Set if unescaped non-ASCII characters are allowed. */
@@ -691,45 +734,55 @@ set_dumper_options(perl_yaml_dumper_t *dumper)
     dumper->emitter.indentless_map =
         ((gv = gv_fetchpv("YAML::XS::IndentlessMap", GV_NOADD_NOINIT, SVt_IV))
           && SvTRUE(GvSV(gv))) ? 1 : 0;
+    if ((ret = hv_fetch(options, "IndentlessMap", sizeof("IndentlessMap")-1, 0)))
+        dumper->emitter.indentless_map = SvIVX(*ret);
+
     dumper->emitter.open_ended =
         ((gv = gv_fetchpv("YAML::XS::OpenEnded", GV_NOADD_NOINIT, SVt_IV))
          && SvTRUE(GvSV(gv))) ? 1 : 0;
+    if ((ret = hv_fetch(options, "OpenEnded", sizeof("OpenEnded")-1, 0)))
+        dumper->emitter.open_ended = SvIVX(*ret);
 
     if ((gv = gv_fetchpv("YAML::XS::Encoding", GV_NOADD_NOINIT, SVt_PV))
         && SvPOK(GvSV(gv)))
-    {
-        const char *enc = SvPVX_const(GvSV(gv));
-        if (strncmp(enc, "any", 3))
-            yaml_emitter_set_encoding(&dumper->emitter, (result = YAML_ANY_ENCODING));
-        else if (strncmp(enc, "utf8", 4))
-            yaml_emitter_set_encoding(&dumper->emitter, YAML_UTF8_ENCODING);
-        else if (strncmp(enc, "utf16le", 7))
-            yaml_emitter_set_encoding(&dumper->emitter, (result = YAML_UTF16LE_ENCODING));
-        else if (strncmp(enc, "utf16be", 7))
-            yaml_emitter_set_encoding(&dumper->emitter, (result = YAML_UTF16BE_ENCODING));
-        else
-            croak("Invalid $YAML::XS::Encoding %s. Valid: any, utf8, utf16le, utf16be", enc);
-    }
+        enc = SvPVX(GvSV(gv));
+    if ((ret = hv_fetch(options, "Encoding", sizeof("Encoding")-1, 0)))
+        enc = SvPVX(*ret);
+
+    if (strncmp(enc, "any", 3))
+        yaml_emitter_set_encoding(&dumper->emitter, (result = YAML_ANY_ENCODING));
+    else if (strncmp(enc, "utf8", 4))
+        yaml_emitter_set_encoding(&dumper->emitter, YAML_UTF8_ENCODING);
+    else if (strncmp(enc, "utf16le", 7))
+        yaml_emitter_set_encoding(&dumper->emitter, (result = YAML_UTF16LE_ENCODING));
+    else if (strncmp(enc, "utf16be", 7))
+        yaml_emitter_set_encoding(&dumper->emitter, (result = YAML_UTF16BE_ENCODING));
+    else if (enc)
+        croak("Invalid $YAML::XS::Encoding %s. Valid: any, utf8, utf16le, utf16be", enc);
+    
     if ((gv = gv_fetchpv("YAML::XS::LineBreak", GV_NOADD_NOINIT, SVt_PV))
         && SvPOK(GvSV(gv)))
-    {
-        const char *lb = SvPVX_const(GvSV(gv));
-        if (strncmp(lb, "any", 3))
-            yaml_emitter_set_break(&dumper->emitter, YAML_ANY_BREAK);
-        else if (strncmp(lb, "cr", 4))
-            yaml_emitter_set_break(&dumper->emitter, YAML_CR_BREAK);
-        else if (strncmp(lb, "ln", 7))
-            yaml_emitter_set_break(&dumper->emitter, YAML_LN_BREAK);
-        else if (strncmp(lb, "crln", 7))
-            yaml_emitter_set_break(&dumper->emitter, YAML_CRLN_BREAK);
-        else
-            croak("Invalid $YAML::XS::LineBreak %s. Valid: any, ln, cr, crln", lb);
-    }
+        lb = SvPVX(GvSV(gv));
+    if ((ret = hv_fetch(options, "LineBreak", sizeof("LineBreak")-1, 0)))
+        lb = SvPVX(*ret);
+    
+    if (strncmp(lb, "any", 3))
+        yaml_emitter_set_break(&dumper->emitter, YAML_ANY_BREAK);
+    else if (strncmp(lb, "cr", 4))
+        yaml_emitter_set_break(&dumper->emitter, YAML_CR_BREAK);
+    else if (strncmp(lb, "ln", 7))
+        yaml_emitter_set_break(&dumper->emitter, YAML_LN_BREAK);
+    else if (strncmp(lb, "crln", 7))
+        yaml_emitter_set_break(&dumper->emitter, YAML_CRLN_BREAK);
+    else if (lb)
+        croak("Invalid $YAML::XS::LineBreak %s. Valid: any, ln, cr, crln", lb);
 
 #define IVCHK(name,field) \
     if ((gv = gv_fetchpv("YAML::XS::" name, GV_NOADD_NOINIT, SVt_IV)) \
         && SvIOK(GvSV(gv)))                                           \
-        yaml_emitter_set_##field(&dumper->emitter, SvIV(GvSV(gv)))
+        yaml_emitter_set_##field(&dumper->emitter, SvIV(GvSV(gv)));   \
+    if ((ret = hv_fetch(options, name, sizeof(name)-1, 0)))           \
+        yaml_emitter_set_##field(&dumper->emitter, SvIV(*ret))
 
     IVCHK("Indent", indent);
     IVCHK("BestWidth", width);
@@ -737,55 +790,66 @@ set_dumper_options(perl_yaml_dumper_t *dumper)
     IVCHK("Unicode", unicode);
 
 #undef IVCHK
-    return result;
+}
+
+SV*
+new_dumper(char* classname, HV *options) {
+    perl_yaml_dumper_t dumper;
+
+    yaml_emitter_initialize(&dumper.emitter);
+    set_dumper_options(&dumper, options);
+    if (!options)
+        options = newHV();
+    hv_store(options, "_dumper", sizeof("_dumper")-1, newSViv(PTR2IV(&dumper)), 0);
+    return sv_2mortal(sv_bless(newRV_noinc((SV*)options),
+                               gv_stashpvn(classname, strlen(classname), 1)));
 }
 
 /*
- * This is the main Dump function.
  * Take zero or more Perl objects and return a YAML stream (as a string)
- * Does take options only via globals.
  */
 int
-Dump()
+dump_string(SV* dumper_obj)
 {
     dXSARGS;
-    perl_yaml_dumper_t dumper;
+    perl_yaml_dumper_t *dumper;
     yaml_event_t event_stream_start;
     yaml_event_t event_stream_end;
     yaml_encoding_t encoding;
     int i;
     SV *yaml = sv_2mortal(newSVpvn("", 0));
 
+    /* Set up the emitter object and begin emitting */
+    SV **hret = hv_fetch((HV*)SvRV(dumper_obj), "_dumper", sizeof("_dumper")-1, 0);
+    dumper = INT2PTR(perl_yaml_dumper_t*, SvIVX(*hret));
+    hret = hv_fetch((HV*)SvRV(dumper_obj), "Encoding", sizeof("Encoding")-1, 0);
+    encoding = hret ? (yaml_encoding_t)SvIVX(*hret) : YAML_UTF8_ENCODING;
+
+    yaml_emitter_set_output(&dumper->emitter,
+                            &yaml_perlio_write_handler,
+                            (void *)yaml);
+    yaml_stream_start_event_initialize(&event_stream_start, encoding);
+    yaml_emitter_emit(&dumper->emitter, &event_stream_start);
+
+    dumper->anchors = (HV *)sv_2mortal((SV *)newHV());
+    dumper->shadows = (HV *)sv_2mortal((SV *)newHV());
     sp = mark;
 
-    /* Set up the emitter object and begin emitting */
-    yaml_emitter_initialize(&dumper.emitter);
-    encoding = set_dumper_options(&dumper);
-    yaml_emitter_set_output(&dumper.emitter,
-        &append_output,
-        (void *)yaml
-    );
+    /* ST(0) is the obj */
+    for (i = 1; i < items; i++) {
+        dumper->anchor = 0;
 
-    yaml_stream_start_event_initialize(&event_stream_start, encoding);
-    yaml_emitter_emit(&dumper.emitter, &event_stream_start);
+        dump_prewalk(dumper, ST(i));
+        dump_document(dumper, ST(i));
 
-    dumper.anchors = (HV *)sv_2mortal((SV *)newHV());
-    dumper.shadows = (HV *)sv_2mortal((SV *)newHV());
-
-    for (i = 0; i < items; i++) {
-        dumper.anchor = 0;
-
-        dump_prewalk(&dumper, ST(i));
-        dump_document(&dumper, ST(i));
-
-        hv_clear(dumper.anchors);
-        hv_clear(dumper.shadows);
+        hv_clear(dumper->anchors);
+        hv_clear(dumper->shadows);
     }
 
     /* End emitting and destroy the emitter object */
     yaml_stream_end_event_initialize(&event_stream_end);
-    yaml_emitter_emit(&dumper.emitter, &event_stream_end);
-    yaml_emitter_delete(&dumper.emitter);
+    yaml_emitter_emit(&dumper->emitter, &event_stream_end);
+    yaml_emitter_delete(&dumper->emitter);
 
     /* Put the YAML stream scalar on the XS output stack */
     if (yaml) {
@@ -803,10 +867,10 @@ Dump()
  * Dump zero or more Perl objects into the file
  */
 int
-DumpFile(SV *sv_file)
+dump_file(SV* dumper_obj, SV *sv_file)
 {
     dXSARGS;
-    perl_yaml_dumper_t dumper;
+    perl_yaml_dumper_t *dumper;
     yaml_event_t event_stream_start;
     yaml_event_t event_stream_end;
     yaml_encoding_t encoding;
@@ -817,22 +881,26 @@ DumpFile(SV *sv_file)
 
     sp = mark;
 
-    yaml_emitter_initialize(&dumper.emitter);
-    encoding = set_dumper_options(&dumper);
+    //yaml_emitter_initialize(&dumper.emitter);
+    //encoding = set_dumper_options(&dumper, NULL);
+    SV **hret = hv_fetch((HV*)SvRV(dumper_obj), "_dumper", sizeof("_dumper")-1, 0);
+    dumper = INT2PTR(perl_yaml_dumper_t*, SvIVX(*hret));
+    hret = hv_fetch((HV*)SvRV(dumper_obj), "Encoding", sizeof("Encoding")-1, 0);
+    encoding = hret ? (yaml_encoding_t)SvIVX(*hret) : YAML_UTF8_ENCODING;
 
     if (SvROK(sv_file)) { /* pv mg or io or gv */
         SV *rv = SvRV(sv_file);
 
         if (SvTYPE(rv) == SVt_PVIO) {
-            dumper.perlio = IoOFP(rv);
-            yaml_emitter_set_output(&dumper.emitter,
+            dumper->perlio = IoOFP(rv);
+            yaml_emitter_set_output(&dumper->emitter,
                                     &yaml_perlio_write_handler,
-                                    &dumper);
+                                    dumper);
         } else if (SvTYPE(rv) == SVt_PVGV && GvIO(rv)) {
-            dumper.perlio = IoOFP(GvIOp(SvRV(sv_file)));
-            yaml_emitter_set_output(&dumper.emitter,
+            dumper->perlio = IoOFP(GvIOp(SvRV(sv_file)));
+            yaml_emitter_set_output(&dumper->emitter,
                                     &yaml_perlio_write_handler,
-                                    &dumper);
+                                    dumper);
         } else if (SvMAGIC(rv)) {
             mg_get(rv);
             fname = SvPV_const(rv, len);
@@ -853,50 +921,50 @@ DumpFile(SV *sv_file)
             croak("Can't open '%s' for output", fname);
             return 0;
         }
-        dumper.filename = (char *)fname;
-        yaml_emitter_set_output_file(&dumper.emitter, file);
+        dumper->filename = (char *)fname;
+        yaml_emitter_set_output_file(&dumper->emitter, file);
     } else if (SvTYPE(sv_file) == SVt_PVIO) {
-        dumper.perlio = IoOFP(sv_file);
-        yaml_emitter_set_output(&dumper.emitter,
+        dumper->perlio = IoOFP(sv_file);
+        yaml_emitter_set_output(&dumper->emitter,
                                 &yaml_perlio_write_handler,
-                                &dumper);
+                                dumper);
     } else if (SvTYPE(sv_file) == SVt_PVGV && GvIO(sv_file)) {
-        dumper.perlio = IoOFP(GvIOp(sv_file));
-        yaml_emitter_set_output(&dumper.emitter,
+        dumper->perlio = IoOFP(GvIOp(sv_file));
+        yaml_emitter_set_output(&dumper->emitter,
                                 &yaml_perlio_write_handler,
-                                &dumper);
+                                dumper);
     } else {
         croak("Invalid argument type: %u", SvTYPE(sv_file));
         return 0;
     }
 
     yaml_stream_start_event_initialize(&event_stream_start, encoding);
-    if (!yaml_emitter_emit(&dumper.emitter, &event_stream_start)) {
+    if (!yaml_emitter_emit(&dumper->emitter, &event_stream_start)) {
         PUTBACK;
         return 0;
     }
 
-    dumper.anchors = (HV *)sv_2mortal((SV *)newHV());
-    dumper.shadows = (HV *)sv_2mortal((SV *)newHV());
+    dumper->anchors = (HV *)sv_2mortal((SV *)newHV());
+    dumper->shadows = (HV *)sv_2mortal((SV *)newHV());
 
-    /* ST(0) is the file */
-    for (i = 1; i < items; i++) {
-        dumper.anchor = 0;
+    /* ST(0) is the obj, ST(1) is the file */
+    for (i = 2; i < items; i++) {
+        dumper->anchor = 0;
 
-        dump_prewalk(&dumper, ST(i));
-        dump_document(&dumper, ST(i));
+        dump_prewalk(dumper, ST(i));
+        dump_document(dumper, ST(i));
 
-        hv_clear(dumper.anchors);
-        hv_clear(dumper.shadows);
+        hv_clear(dumper->anchors);
+        hv_clear(dumper->shadows);
     }
 
     /* End emitting and destroy the emitter object */
     yaml_stream_end_event_initialize(&event_stream_end);
-    if (!yaml_emitter_emit(&dumper.emitter, &event_stream_end)) {
+    if (!yaml_emitter_emit(&dumper->emitter, &event_stream_end)) {
         PUTBACK;
         return 0;
     }
-    yaml_emitter_delete(&dumper.emitter);
+    yaml_emitter_delete(&dumper->emitter);
     if (file)
         fclose(file);
     else if (SvTYPE(sv_file) == SVt_PVIO)
@@ -1350,7 +1418,7 @@ dump_ref(perl_yaml_dumper_t *dumper, SV *node)
 }
 
 static int
-append_output(void *sv, unsigned char *buffer, size_t size)
+yaml_sv_write_handler(void *sv, unsigned char *buffer, size_t size)
 {
     sv_catpvn((SV *)sv, (const char *)buffer, (STRLEN)size);
     return 1;

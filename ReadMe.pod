@@ -23,13 +23,25 @@ YAML::XS - Perl YAML Serialization using XS and libyaml
     my $yaml = DumpFile ("my.yml", [ 1..4 ]);
     my $array = LoadFile "my.yml";
 
+    my $yaml = new YAML::XS;
+    $yaml->NonStrict(1);
+    $yaml->Encoding("any");
+    $yaml->SafeClass("DateTime");
+    my $array = $yaml->SafeLoadFile("META.yml");
+
+    my $yaml = new YAML::XS;
+    $yaml->Canonical(1);
+    $yaml->Unicode(1);
+    $yaml->SafeClass("DateTime");
+    my $array = $yaml->SafeDumpFile("META.yml");
+
 =head1 Description
 
 Kirill Siminov's C<libyaml> is a good YAML library implementation. The C
 library is written precisely to the YAML 1.1 specification, and offers YAML
 1.2 support. It was originally bound to Python and was later bound to Ruby.
 C<libsyck> is written a bit more elegant, has less bugs, is not as strict as
-libyaml, but misses some YAML features. It can only do YAML 1.1
+libyaml, but misses some YAML features. It can only do YAML 1.0
 
 This module is a Perl XS binding to libyaml which offers Perl somewhat
 acceptable YAML support to date.
@@ -37,6 +49,10 @@ acceptable YAML support to date.
 This module exports the functions C<Dump>, C<Load>, C<DumpFile> and
 C<LoadFile>. These functions are intended to work exactly like C<YAML.pm>'s
 corresponding functions.
+
+There are also new Safe variants of Load and Dump methods, and the
+possibility to create a YAML object, set options as setter methods and call
+the Safe methods.
 
 If you set the option C<$YAML::XS::IndentlessMap> to 0 or undef, C<YAML::XS>
 will behave like with version E<lt> 0.70, which creates yml files which cannot
@@ -47,11 +63,77 @@ C<CPAN::Meta::YAML> i.e. C<YAML::Tiny> as used in core. Set the variable
 C<$YAML::XS::NonStrict> to allow certain reader errors to pass the
 C<CPAN::Meta> validation testsuite.
 
+=head1 CLASSES
+
+-- YAML::XS
+
+The exported name of the class for the old functions. No methods, only set
+options via globals.
+
+-- YAML::XS::LibYAML
+
+The internal name of the class for the old functions. No methods, only set
+options via globals.
+
+-- YAML::XS::Loader
+
+The new loader objectinterface, which has methods for options and loaders.
+
+-- YAML::XS::Dumper
+
+The new dumper object interface, which has methods for options and dumpers.
+
+-- YAML::XS::SafeLoader
+
+The new loader and restricted object interface, which has methods for options
+and the safe loaders.
+
+-- YAML::XS::SafeDumper
+
+The new dumper and restricted object interface, which has methods for options
+and the safe dumpers.
+
+=head1 FUNCTIONS
+
+-- Load
+
+-- LoadFile
+
+-- Dump
+
+-- DumpFile
+
+=head1 METHODS
+
+-- new "classname", option => value, ...
+
+Create a YAML loader or dumper object with some options.
+
+-- SafeClass "classname", ...
+
+Add a string or list of strings to the list of allowed classes to the
+C<Safe{Load,Dump}> methods. Without any SafeClass added, no custom C<!>
+classes are allow in the YAML.
+
+-- SafeLoad
+
+Restrict the loader to the registered safe classes only.
+
+-- SafeLoadFile
+
+-- SafeDump
+
+Restrict the dumper to the registered safe classes only.
+
+-- SafeDumpFile
+
+and all the loader and dumper options as getter and setter methods.
+
 =head1 Configuration
 
 =head2 Loader Options
 
-via globals variables only, so far. Affecting Load and LoadFile.
+via globals variables or as optional getter and setter methods.
 
 -- C<$YAML::XS::NonStrict>
 
@@ -72,7 +154,7 @@ Ignored. If enabled supports deparsing and evaling of code blocks.
 
 =head2 Dumper Options
 
-via globals variables only, so far. Affecting Dump and DumpFile
+via globals variables or as optional getter and setter methods.
 
 -- C<$YAML::XS::UseCode>
 
@@ -148,6 +230,13 @@ Default 0
 
 Set to 1 or a true value to embed the yaml into "...". If an explicit document
 end is required.
+
+-- C<$YAML::XS::SafeMode>
+
+Default 0
+
+Set to 1 or a true value to restrict the allowed classed only the set of
+registered classes or tags starting with "perl/".
 
 =head1 Using YAML::XS with Unicode
 

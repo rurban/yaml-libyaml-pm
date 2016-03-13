@@ -28,10 +28,12 @@ typedef struct {
     yaml_parser_t parser;
     yaml_event_t event;
     HV *anchors;
-    int load_code;
-    int document;
     char *filename;
     PerlIO *perlio;
+    HV* safe_classes;
+    int document;
+    bool load_code;
+    bool safe_load;
 } perl_yaml_loader_t;
 
 typedef struct {
@@ -39,21 +41,29 @@ typedef struct {
     long anchor;
     HV *anchors;
     HV *shadows;
-    int dump_code;
-    int quote_number_strings;
     char *filename;
     PerlIO *perlio;
+    HV* safe_classes;
+    bool dump_code;
+    bool quote_number_strings;
+    bool safe_dump;
 } perl_yaml_dumper_t;
 
-int
-Dump();
+SV*
+new_loader(char*, HV*);
+
+SV*
+new_dumper(char*, HV*);
 
 int
-DumpFile(SV *);
+dump_string(SV*);
 
 int
-Load(SV *);
+dump_file(SV*, SV*);
 
 int
-LoadFile(SV *);
+load_string(SV*, SV*);
+
+int
+load_file(SV*, SV*);
 
