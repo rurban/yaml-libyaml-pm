@@ -1,5 +1,7 @@
 #include <perl_libyaml.h>
 
+#define NUM_KEYS 23
+
 void
 set_dumper_options(perl_yaml_dumper_t *, HV*);
 void
@@ -172,46 +174,45 @@ loader_error_msg(perl_yaml_loader_t *loader, char *problem)
 void
 set_loader_options(perl_yaml_loader_t *loader, HV *options)
 {
-    GV *gv;
-    yaml_encoding_t result = YAML_UTF8_ENCODING;
+    char *enc = NULL;
     SV **ret;
 
-    /* As with YAML::Tiny. Default: strict Load */
-    gv = gv_fetchpv("YAML::XS::NonStrict", TRUE, SVt_PV);
-    loader->parser.problem_nonstrict = gv && SvTRUE(GvSV(gv)) ? 1 : 0;
-    ret = hv_fetch(options, "NonStrict", 9, 0);
-    if (ret) loader->parser.problem_nonstrict = SvIVX(*ret);
-
-    loader->document = 0;
-    loader->filename = NULL;
-
+    if (HvKEYS(GvHV(gv_fetchpv("YAML::XS::", GV_NOADD_NOINIT, SVt_PVHV))) > NUM_KEYS)
     {
-        char *enc = NULL;
+        GV *gv;
+        /* As with YAML::Tiny. Default: strict Load */
+        if ((gv = gv_fetchpv("YAML::XS::NonStrict", GV_NOADD_NOINIT, SVt_IV)))
+            loader->parser.problem_nonstrict = SvTRUE(GvSV(gv)) ? 1 : 0;
+        if ((gv = gv_fetchpv("YAML::XS::LoadCode", GV_NOADD_NOINIT, SVt_IV)))
+            loader->load_code = SvTRUE(GvSV(gv)) ? 1 : 0;
         if ((gv = gv_fetchpv("YAML::XS::Encoding", GV_NOADD_NOINIT, SVt_PV))
             && SvPOK(GvSV(gv)))
-        {
             enc = SvPVX(GvSV(gv));
-        }
+    }
+    if (options && HvKEYS(options)) {
+        if ((ret = hv_fetch(options, "NonStrict", 9, 0)))
+            loader->parser.problem_nonstrict = SvIVX(*ret);
+        if ((ret = hv_fetch(options, "LoadCode", 8, 0)))
+            loader->load_code = SvIVX(*ret);
         if ((ret = hv_fetch(options, "Encoding", sizeof("Encoding")-1, 0)))
             enc = SvPVX(*ret);
-        
-        if (strncmp(enc, "any", 3))
-            yaml_parser_set_encoding(&loader->parser,
-                                     (result = YAML_ANY_ENCODING));
-        else if (strncmp(enc, "utf8", 4))
-            yaml_parser_set_encoding(&loader->parser, YAML_UTF8_ENCODING);
-        else if (strncmp(enc, "utf16le", 7))
-            yaml_parser_set_encoding(&loader->parser,
-                                     (result = YAML_UTF16LE_ENCODING));
-        else if (strncmp(enc, "utf16be", 7))
-            yaml_parser_set_encoding(&loader->parser,
-                                     (result = YAML_UTF16BE_ENCODING));
-        else if (enc)
-            croak("Invalid $YAML::XS::Encoding %s. Valid: any, utf8, utf16le, utf16be", enc);
-        /*
-        if (result && !ret)
-            hv_store(obj, "Encoding", 8, newSViv((IV)result), 0);  */
     }
+        
+    if (!enc)
+        ;
+    else if (strncmp(enc, "any", 3))
+        yaml_parser_set_encoding(&loader->parser, YAML_ANY_ENCODING);
+    else if (strncmp(enc, "utf8", 4))
+        yaml_parser_set_encoding(&loader->parser, YAML_UTF8_ENCODING);
+    else if (strncmp(enc, "utf16le", 7))
+        yaml_parser_set_encoding(&loader->parser, YAML_UTF16LE_ENCODING);
+    else if (strncmp(enc, "utf16be", 7))
+        yaml_parser_set_encoding(&loader->parser, YAML_UTF16BE_ENCODING);
+    else if (enc)
+        croak("Invalid $YAML::XS::Encoding %s. Valid: any, utf8, utf16le, utf16be", enc);
+    /*
+      if (result && !ret)
+      hv_store(obj, "Encoding", 8, newSViv((IV)result), 0);  */
 }
 
 static int
@@ -275,13 +276,13 @@ load_error:
 
 SV*
 new_loader(char* classname, HV *options) {
-    perl_yaml_loader_t loader;
-
-    yaml_parser_initialize(&loader.parser);
-    set_loader_options(&loader, options);
+    perl_yaml_loader_t *loader = (perl_yaml_loader_t *)
+        calloc(1, sizeof(perl_yaml_loader_t *));
+    yaml_parser_initialize(&loader->parser);
+    set_loader_options(loader, options);
     if (!options)
         options = newHV();
-    hv_store(options, "_loader", sizeof("_loader")-1, newSViv(PTR2IV(&loader)), 0);
+    hv_store(options, "_loader", sizeof("_loader")-1, newSViv(PTR2IV(loader)), 0);
     return sv_2mortal(sv_bless(newRV_noinc((SV*)options),
                                gv_stashpvn(classname, strlen(classname), 1)));
 }
@@ -300,8 +301,6 @@ load_file(SV* loader_obj, SV *sv_file)
 
     SV **hret = hv_fetch((HV*)SvRV(loader_obj), "_loader", sizeof("_loader")-1, 0);
     loader = INT2PTR(perl_yaml_loader_t*, SvIVX(*hret));
-    //yaml_parser_initialize(&loader->parser);
-    //(void)set_loader_options(loader, (HV*)SvRV(loader_obj));
 
     if (SvROK(sv_file)) { /* pv mg or io or gv */
         SV *rv = SvRV(sv_file);
@@ -699,74 +698,99 @@ set_dumper_options(perl_yaml_dumper_t *dumper, HV* options)
 {
     GV *gv;
     SV **ret;
-    yaml_encoding_t result = YAML_UTF8_ENCODING;
+    yaml_encoding_t result;
     char *enc = NULL;
     char *lb = NULL;
-
-    dumper->dump_code = (
-        ((gv = gv_fetchpv("YAML::XS::UseCode", GV_NOADD_NOINIT, SVt_IV))
-         && SvTRUE(GvSV(gv)))
-    ||
-        ((gv = gv_fetchpv("YAML::XS::DumpCode", GV_NOADD_NOINIT, SVt_IV)) &&
-        SvTRUE(GvSV(gv)))
-    );
-    ret = hv_fetch(options, "UseCode", 7, 0);
-    if (ret)
-        dumper->dump_code = SvIVX(*ret);
-    else {
-        if ((ret = hv_fetch(options, "DumpCode", 8, 0)))
-            dumper->dump_code = SvIVX(*ret);
-    }
-    
-    dumper->quote_number_strings = (
-        ((gv = gv_fetchpv("YAML::XS::QuoteNumericStrings", GV_NOADD_NOINIT, SVt_IV)) &&
-        SvTRUE(GvSV(gv)))
-    );
-    if ((ret = hv_fetch(options, "QuoteNumericStrings", sizeof("QuoteNumericStrings")-1, 0)))
-        dumper->quote_number_strings = SvIVX(*ret);
-    dumper->filename = NULL;
 
     /* Set if unescaped non-ASCII characters are allowed. */
     yaml_emitter_set_unicode(&dumper->emitter, 1);
     yaml_emitter_set_indent(&dumper->emitter, 2);
     yaml_emitter_set_width(&dumper->emitter, 80);
 
-    dumper->emitter.indentless_map =
-        ((gv = gv_fetchpv("YAML::XS::IndentlessMap", GV_NOADD_NOINIT, SVt_IV))
-          && SvTRUE(GvSV(gv))) ? 1 : 0;
-    if ((ret = hv_fetch(options, "IndentlessMap", sizeof("IndentlessMap")-1, 0)))
-        dumper->emitter.indentless_map = SvIVX(*ret);
+    if (HvKEYS(GvHV(gv_fetchpv("YAML::XS::", GV_NOADD_NOINIT, SVt_PVHV))) > NUM_KEYS)
+    {
+        if  (((gv = gv_fetchpv("YAML::XS::UseCode", GV_NOADD_NOINIT, SVt_IV))
+              && SvTRUE(GvSV(gv)))
+             ||
+             ((gv = gv_fetchpv("YAML::XS::DumpCode", GV_NOADD_NOINIT, SVt_IV))
+              && SvTRUE(GvSV(gv))))
+            dumper->dump_code = 1;
+        if ((gv = gv_fetchpv("YAML::XS::QuoteNumericStrings", GV_NOADD_NOINIT, SVt_IV))
+            && SvTRUE(GvSV(gv)))
+            dumper->quote_number_strings = 1;
+        if ((gv = gv_fetchpv("YAML::XS::IndentlessMap", GV_NOADD_NOINIT, SVt_IV))
+            && SvTRUE(GvSV(gv)))
+            dumper->emitter.indentless_map = 1;
+        if ((gv = gv_fetchpv("YAML::XS::OpenEnded", GV_NOADD_NOINIT, SVt_IV))
+            && SvTRUE(GvSV(gv)))
+            dumper->emitter.open_ended = 1;
+        if ((gv = gv_fetchpv("YAML::XS::LineBreak", GV_NOADD_NOINIT, SVt_PV))
+            && SvPOK(GvSV(gv)))
+            lb = SvPVX(GvSV(gv));
+        if ((gv = gv_fetchpv("YAML::XS::Encoding", GV_NOADD_NOINIT, SVt_PV))
+            && SvPOK(GvSV(gv)))
+            enc = SvPVX(GvSV(gv));
 
-    dumper->emitter.open_ended =
-        ((gv = gv_fetchpv("YAML::XS::OpenEnded", GV_NOADD_NOINIT, SVt_IV))
-         && SvTRUE(GvSV(gv))) ? 1 : 0;
-    if ((ret = hv_fetch(options, "OpenEnded", sizeof("OpenEnded")-1, 0)))
-        dumper->emitter.open_ended = SvIVX(*ret);
+#define IVCHKg(name,field) \
+    if ((gv = gv_fetchpv("YAML::XS::" name, GV_NOADD_NOINIT, SVt_IV)) \
+        && SvIOK(GvSV(gv)))                                           \
+        yaml_emitter_set_##field(&dumper->emitter, SvIV(GvSV(gv)))
 
-    if ((gv = gv_fetchpv("YAML::XS::Encoding", GV_NOADD_NOINIT, SVt_PV))
-        && SvPOK(GvSV(gv)))
-        enc = SvPVX(GvSV(gv));
-    if ((ret = hv_fetch(options, "Encoding", sizeof("Encoding")-1, 0)))
-        enc = SvPVX(*ret);
+        IVCHKg("Indent", indent);
+        IVCHKg("BestWidth", width);
+        IVCHKg("Canonical", canonical);
+        IVCHKg("Unicode", unicode);
+#undef IVCHKg
+    }
 
-    if (strncmp(enc, "any", 3))
-        yaml_emitter_set_encoding(&dumper->emitter, (result = YAML_ANY_ENCODING));
+    if (options && HvKEYS(options)) {
+        if ((ret = hv_fetch(options, "UseCode", 7, 0)))
+            dumper->dump_code = SvIVX(*ret);
+        else {
+            if ((ret = hv_fetch(options, "DumpCode", 8, 0)))
+                dumper->dump_code = SvIVX(*ret);
+        }
+    
+        if ((ret = hv_fetch(options, "QuoteNumericStrings", sizeof("QuoteNumericStrings")-1, 0)))
+            dumper->quote_number_strings = SvIVX(*ret);
+
+        if ((ret = hv_fetch(options, "IndentlessMap", sizeof("IndentlessMap")-1, 0)))
+            dumper->emitter.indentless_map = SvIVX(*ret);
+        if ((ret = hv_fetch(options, "OpenEnded", sizeof("OpenEnded")-1, 0)))
+            dumper->emitter.open_ended = SvIVX(*ret);
+        if ((ret = hv_fetch(options, "Encoding", sizeof("Encoding")-1, 0)))
+            enc = SvPVX(*ret);
+        if ((ret = hv_fetch(options, "LineBreak", sizeof("LineBreak")-1, 0)))
+            lb = SvPVX(*ret);
+    
+#define IVCHKh(name,field) \
+        if ((ret = hv_fetch(options, name, sizeof(name)-1, 0))) \
+            yaml_emitter_set_##field(&dumper->emitter, SvIV(*ret))
+
+        IVCHKh("Indent", indent);
+        IVCHKh("BestWidth", width);
+        IVCHKh("Canonical", canonical);
+        IVCHKh("Unicode", unicode);
+
+#undef IVCHKh
+    }
+
+    if (!enc)
+        ;
+    else if (strncmp(enc, "any", 3))
+        yaml_emitter_set_encoding(&dumper->emitter, YAML_ANY_ENCODING);
     else if (strncmp(enc, "utf8", 4))
         yaml_emitter_set_encoding(&dumper->emitter, YAML_UTF8_ENCODING);
     else if (strncmp(enc, "utf16le", 7))
-        yaml_emitter_set_encoding(&dumper->emitter, (result = YAML_UTF16LE_ENCODING));
+        yaml_emitter_set_encoding(&dumper->emitter, YAML_UTF16LE_ENCODING);
     else if (strncmp(enc, "utf16be", 7))
-        yaml_emitter_set_encoding(&dumper->emitter, (result = YAML_UTF16BE_ENCODING));
+        yaml_emitter_set_encoding(&dumper->emitter, YAML_UTF16BE_ENCODING);
     else if (enc)
         croak("Invalid $YAML::XS::Encoding %s. Valid: any, utf8, utf16le, utf16be", enc);
     
-    if ((gv = gv_fetchpv("YAML::XS::LineBreak", GV_NOADD_NOINIT, SVt_PV))
-        && SvPOK(GvSV(gv)))
-        lb = SvPVX(GvSV(gv));
-    if ((ret = hv_fetch(options, "LineBreak", sizeof("LineBreak")-1, 0)))
-        lb = SvPVX(*ret);
-    
-    if (strncmp(lb, "any", 3))
+    if (!lb)
+        ;
+    else if (strncmp(lb, "any", 3))
         yaml_emitter_set_break(&dumper->emitter, YAML_ANY_BREAK);
     else if (strncmp(lb, "cr", 4))
         yaml_emitter_set_break(&dumper->emitter, YAML_CR_BREAK);
@@ -776,31 +800,17 @@ set_dumper_options(perl_yaml_dumper_t *dumper, HV* options)
         yaml_emitter_set_break(&dumper->emitter, YAML_CRLN_BREAK);
     else if (lb)
         croak("Invalid $YAML::XS::LineBreak %s. Valid: any, ln, cr, crln", lb);
-
-#define IVCHK(name,field) \
-    if ((gv = gv_fetchpv("YAML::XS::" name, GV_NOADD_NOINIT, SVt_IV)) \
-        && SvIOK(GvSV(gv)))                                           \
-        yaml_emitter_set_##field(&dumper->emitter, SvIV(GvSV(gv)));   \
-    if ((ret = hv_fetch(options, name, sizeof(name)-1, 0)))           \
-        yaml_emitter_set_##field(&dumper->emitter, SvIV(*ret))
-
-    IVCHK("Indent", indent);
-    IVCHK("BestWidth", width);
-    IVCHK("Canonical", canonical);
-    IVCHK("Unicode", unicode);
-
-#undef IVCHK
 }
 
 SV*
 new_dumper(char* classname, HV *options) {
-    perl_yaml_dumper_t dumper;
-
-    yaml_emitter_initialize(&dumper.emitter);
-    set_dumper_options(&dumper, options);
+    perl_yaml_dumper_t *dumper = (perl_yaml_dumper_t *)
+        calloc(1, sizeof(perl_yaml_dumper_t *));
+    yaml_emitter_initialize(&dumper->emitter);
+    set_dumper_options(dumper, options);
     if (!options)
         options = newHV();
-    hv_store(options, "_dumper", sizeof("_dumper")-1, newSViv(PTR2IV(&dumper)), 0);
+    hv_store(options, "_dumper", sizeof("_dumper")-1, newSViv(PTR2IV(dumper)), 0);
     return sv_2mortal(sv_bless(newRV_noinc((SV*)options),
                                gv_stashpvn(classname, strlen(classname), 1)));
 }
@@ -825,9 +835,7 @@ dump_string(SV* dumper_obj)
     hret = hv_fetch((HV*)SvRV(dumper_obj), "Encoding", sizeof("Encoding")-1, 0);
     encoding = hret ? (yaml_encoding_t)SvIVX(*hret) : YAML_UTF8_ENCODING;
 
-    yaml_emitter_set_output(&dumper->emitter,
-                            &yaml_perlio_write_handler,
-                            (void *)yaml);
+    yaml_emitter_set_output(&dumper->emitter, &yaml_sv_write_handler, (void *)yaml);
     yaml_stream_start_event_initialize(&event_stream_start, encoding);
     yaml_emitter_emit(&dumper->emitter, &event_stream_start);
 
@@ -881,8 +889,6 @@ dump_file(SV* dumper_obj, SV *sv_file)
 
     sp = mark;
 
-    //yaml_emitter_initialize(&dumper.emitter);
-    //encoding = set_dumper_options(&dumper, NULL);
     SV **hret = hv_fetch((HV*)SvRV(dumper_obj), "_dumper", sizeof("_dumper")-1, 0);
     dumper = INT2PTR(perl_yaml_dumper_t*, SvIVX(*hret));
     hret = hv_fetch((HV*)SvRV(dumper_obj), "Encoding", sizeof("Encoding")-1, 0);

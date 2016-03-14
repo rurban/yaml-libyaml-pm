@@ -29,6 +29,18 @@ new (klass, options=NULL)
   OUTPUT:
     RETVAL
 
+#if 0
+
+void
+DESTROY (SV* obj)
+  CODE:
+    if (obj) {
+      SV **hret = hv_fetch((HV*)SvRV(obj), "_loader", sizeof("_loader")-1, 0);
+      if (*hret) free(INT2PTR(void*, SvIVX(*hret)));
+    }
+
+#endif
+
 void
 Load (loader_obj, yaml_string, options=NULL)
     SV *loader_obj
@@ -162,6 +174,18 @@ new (klass, options=NULL)
     RETVAL = new_dumper(klass, options);
   OUTPUT:
     RETVAL
+
+#if 0
+
+void
+DESTROY (SV* obj)
+  CODE:
+    if (obj) {
+      SV **hret = hv_fetch((HV*)SvRV(obj), "_dumper", sizeof("_dumper")-1, 0);
+      if (*hret) free(INT2PTR(void*, SvIVX(*hret)));
+    }
+
+#endif
 
 void
 Dump (dumper_obj, ...)
