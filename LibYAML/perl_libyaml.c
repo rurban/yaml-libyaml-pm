@@ -283,6 +283,11 @@ new_loader(char* classname, HV *options) {
     if (!options)
         options = newHV();
     hv_store(options, "_loader", sizeof("_loader")-1, newSViv(PTR2IV(loader)), 0);
+    /* sv_derived_class is not really an option here */
+    if (strEQ(classname, "YAML::XS::SafeLoader")) {
+        hv_store(options, "SafeMode", sizeof("SafeMode")-1, newSViv(1), 0);
+        loader->safe_load = 1;
+    }
     return sv_2mortal(sv_bless(newRV_noinc((SV*)options),
                                gv_stashpvn(classname, strlen(classname), 1)));
 }
@@ -810,6 +815,11 @@ new_dumper(char* classname, HV *options) {
     set_dumper_options(dumper, options);
     if (!options)
         options = newHV();
+    /* sv_derived_class is not really an option here */
+    if (strEQ(classname, "YAML::XS::SafeDumper")) {
+        hv_store(options, "SafeMode", sizeof("SafeMode")-1, newSViv(1), 0);
+        dumper->safe_dump = 1;
+    }
     hv_store(options, "_dumper", sizeof("_dumper")-1, newSViv(PTR2IV(dumper)), 0);
     return sv_2mortal(sv_bless(newRV_noinc((SV*)options),
                                gv_stashpvn(classname, strlen(classname), 1)));
