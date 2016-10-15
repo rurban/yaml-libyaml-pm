@@ -200,13 +200,13 @@ set_loader_options(perl_yaml_loader_t *loader, HV *options)
         
     if (!enc)
         ;
-    else if (strncmp(enc, "any", 3))
+    else if (memEQs(enc, 3, "any"))
         yaml_parser_set_encoding(&loader->parser, YAML_ANY_ENCODING);
-    else if (strncmp(enc, "utf8", 4))
+    else if (memEQs(enc, 4, "utf8"))
         yaml_parser_set_encoding(&loader->parser, YAML_UTF8_ENCODING);
-    else if (strncmp(enc, "utf16le", 7))
+    else if (memEQs(enc, 7, "utf16le"))
         yaml_parser_set_encoding(&loader->parser, YAML_UTF16LE_ENCODING);
-    else if (strncmp(enc, "utf16be", 7))
+    else if (memEQs(enc, 7, "utf16be"))
         yaml_parser_set_encoding(&loader->parser, YAML_UTF16BE_ENCODING);
     else if (enc)
         croak("Invalid $YAML::XS::Encoding %s. Valid: any, utf8, utf16le, utf16be", enc);
@@ -782,26 +782,26 @@ set_dumper_options(perl_yaml_dumper_t *dumper, HV* options)
 
     if (!enc)
         ;
-    else if (strncmp(enc, "any", 3))
+    else if (memEQs(enc, 3, "any"))
         yaml_emitter_set_encoding(&dumper->emitter, YAML_ANY_ENCODING);
-    else if (strncmp(enc, "utf8", 4))
+    else if (memEQs(enc, 4, "utf8"))
         yaml_emitter_set_encoding(&dumper->emitter, YAML_UTF8_ENCODING);
-    else if (strncmp(enc, "utf16le", 7))
+    else if (memEQs(enc, 7, "utf16le"))
         yaml_emitter_set_encoding(&dumper->emitter, YAML_UTF16LE_ENCODING);
-    else if (strncmp(enc, "utf16be", 7))
+    else if (memEQs(enc, 7, "utf16be"))
         yaml_emitter_set_encoding(&dumper->emitter, YAML_UTF16BE_ENCODING);
     else if (enc)
         croak("Invalid $YAML::XS::Encoding %s. Valid: any, utf8, utf16le, utf16be", enc);
     
     if (!lb)
         ;
-    else if (strncmp(lb, "any", 3))
+    else if (memEQs(lb, 3, "any"))
         yaml_emitter_set_break(&dumper->emitter, YAML_ANY_BREAK);
-    else if (strncmp(lb, "cr", 4))
+    else if (memEQs(lb, 2, "cr"))
         yaml_emitter_set_break(&dumper->emitter, YAML_CR_BREAK);
-    else if (strncmp(lb, "ln", 7))
+    else if (memEQs(lb, 2, "ln"))
         yaml_emitter_set_break(&dumper->emitter, YAML_LN_BREAK);
-    else if (strncmp(lb, "crln", 7))
+    else if (memEQs(lb, 4, "crln"))
         yaml_emitter_set_break(&dumper->emitter, YAML_CRLN_BREAK);
     else if (lb)
         croak("Invalid $YAML::XS::LineBreak %s. Valid: any, ln, cr, crln", lb);
