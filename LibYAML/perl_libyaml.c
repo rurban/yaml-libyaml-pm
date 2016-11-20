@@ -578,9 +578,11 @@ load_scalar(perl_yaml_loader_t *loader)
         else if (strEQc(string, "null"))
             return newSV(0);
         else if (strEQc(string, "true"))
-            return &PL_sv_yes;
+            /*return newSVsv(yaml_true);*/
+            return newSVsv(&PL_sv_yes);
         else if (strEQc(string, "false"))
-            return &PL_sv_no;
+            /*return newSVsv(yaml_false);*/
+            return newSVsv(&PL_sv_no);
     }
 
     scalar = newSVpvn(string, length);

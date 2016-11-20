@@ -3,8 +3,8 @@ use strict;
 use Config;
 
 if (-d '../.git') {
-    system("./update.sh") == 0
-        or die "update.sh failed";
+    #system("./update.sh") == 0
+    #    or die "update.sh failed";
 }
 
 my @c_files = glob("*.c");
